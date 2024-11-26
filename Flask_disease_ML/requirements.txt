@@ -1,0 +1,13 @@
+flask 
+flask-cors
+joblib 
+bcrypt 
+numpy 
+pandas 
+pymongo 
+scikit-learn
+matplotlib
+seaborn 
+scikit-learn 
+plotly
+flask_jwt_extended
