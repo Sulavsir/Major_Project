@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 import re
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.metrics import roc_curve, auc, confusion_matrix, accuracy_score
 from sklearn.model_selection import train_test_split
 import seaborn as sns
 import io
@@ -35,7 +35,6 @@ suggestions_collection = db["suggestions"]
 app.config['JWT_SECRET_KEY'] = SECRET_KEY
 jwt = JWTManager(app)
 
-
 # Load models (SVM, RF, LR) and scaler
 working_dir = os.path.dirname(os.path.abspath(__file__))
 try:
@@ -49,7 +48,6 @@ except Exception as e:
     exit("Model or scaler files are missing. Please check the files.")
 
 def preprocess_new_data(data, scaler, saved_columns):
-    print("hi preprocess")
     # List of categorical columns (update these based on your dataset)
     categorical_columns = ['cp', 'restecg', 'exang', 'slope', 'ca', 'thal', 'fbs']
     
@@ -70,8 +68,7 @@ def preprocess_new_data(data, scaler, saved_columns):
     # Apply the scaler to the continuous columns
     data_encoded[continuous_columns] = scaler.transform(data_encoded[continuous_columns])
 
-    print("Processed DataFrame after preprocessing:")
-    print(data_encoded.head())
+
 
     return data_encoded
 
@@ -133,51 +130,25 @@ def generate_comparative_auc_chart(auc_scores):
 @app.route("/results", methods=['GET'])
 def viewResults():
     try:
-        print("Accessing /results route")  # Debugging print statement
+        # Fetch prediction history from MongoDB
+        prediction_history = list(predictions_collection.find().sort('prediction_time', -1))  # Get most recent predictions
+        
+        # Format results to be more readable
+        formatted_results = []
+        for record in prediction_history:
+            formatted_results.append({
+                "input_data": record.get("input_data"),
+                "prediction": record.get("prediction"),
+                "model_used": record.get("model_used"),
+                "prediction_time": record.get("prediction_time").strftime("%Y-%m-%d %H:%M:%S"),
+                "accuracy": record.get("accuracy")
+            })
 
-        # Sample input data
-        sample_data = {
-            'age': [52],
-            'sex': [1],  # Male
-            'cp': [0],  # Typical Angina
-            'trestbps': [125],
-            'chol': [212],
-            'fbs': [0],  # Fasting blood sugar < 120 mg/dl
-            'restecg': [1],  # Normal
-            'thalach': [168],
-            'exang': [0],  # No exercise induced angina
-            'oldpeak': [1.0],
-            'slope': [2],  # Upsloping
-            'ca': [2],  # Number of major vessels (0-3)
-            'thal': [3]   # Normal
-        }
-
-        # Convert the sample data into a DataFrame
-        input_data = pd.DataFrame(sample_data)
-
-        # Preprocess the sample data
-        processed_data = preprocess_new_data(input_data, scaler, saved_columns)
-
-        # Display the processed data
-        print("Processed Data for Prediction:")
-        print(processed_data)
-
-        # Now make predictions using the models
-        log_pred = heart_disease_lr_model.predict(processed_data)
-        svm_pred = heart_disease_svm_model.predict(processed_data)
-        rf_pred = heart_disease_rf_model.predict(processed_data)
-
-        # Output the predictions
-        log_result = {'Logistic Regression': 'Disease' if log_pred[0] == 1 else 'No Disease'}
-        svm_result = {'SVM': 'Disease' if svm_pred[0] == 1 else 'No Disease'}
-        rf_result = {'Random Forest': 'Disease' if rf_pred[0] == 1 else 'No Disease'}
-
-        return jsonify(log_result=log_result, svm_result=svm_result, rf_result=rf_result), 200
+        return jsonify({"prediction_history": formatted_results}), 200
 
     except Exception as e:
         print(f"Error processing /results: {e}")
         return jsonify({"message": "An error occurred while processing the request"}), 500
-
 
 
 # Route to generate the report for all models
@@ -312,7 +283,6 @@ def predict_heart_disease():
 
     data = request.get_json()  # Get the input data from the request
 
-    
     # Required fields to be validated in the request
     required_fields = [
         'age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 'thalach', 
@@ -341,10 +311,8 @@ def predict_heart_disease():
     except ValueError as e:
         return jsonify({"message": f"Invalid input: {str(e)}"}), 400
 
-
     # Extract model_type
     model_type = data.get('model_type', "")
-
 
     # Prepare the features list (make sure to extract the correct values)
     features = [
@@ -355,8 +323,6 @@ def predict_heart_disease():
     # Create the DataFrame for the model input
     try:
         input_data = pd.DataFrame([features], columns=required_fields[:13])
-        
-
         processed_data = preprocess_new_data(input_data, scaler, saved_columns)  # Preprocess input data
         print("Processed DataFrame after preprocessing:")
         print(processed_data)  # Log the processed DataFrame
@@ -385,15 +351,43 @@ def predict_heart_disease():
 
     # Determine the prediction result (1 = Disease, 0 = No Disease)
     result = 'Heart Disease predicted' if prediction[0] == 1 else 'No Heart Disease predicted'
-    
+
+    # Evaluate the model's accuracy without retraining:
+    try:
+        try:
+            full_data = pd.read_csv(f'{working_dir}/dataset/heart.csv')  
+        except Exception as e:
+            print(f"An error occurred: {e}")  
+
+        # Prepare X and y (features and labels)
+        X = full_data.drop(columns=['target'])  
+        y = full_data['target']  
+
+        # Split the dataset into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Preprocess the test data (same preprocessing as for the input data)
+        processed_X_test = preprocess_new_data(X_test, scaler, saved_columns)
+
+        # Use the pre-trained model to predict on the test data
+        test_predictions = model.predict(processed_X_test)
+
+        # Calculate accuracy
+        accuracy = accuracy_score(y_test, test_predictions)
+        print(f"Model accuracy on test data: {accuracy * 100:.2f}%")
+    except Exception as e:
+        accuracy = None
+        print(f"Error during accuracy calculation: {str(e)}")
+
     # Record the prediction in the database (MongoDB or your preferred DB)
     prediction_record = {
         "input_data": data,
         "prediction": result,
         "model_used": model_type,
-        "prediction_time": datetime.now()
+        "prediction_time": datetime.now(),
+        "accuracy": f"{accuracy * 100:.2f}%" if accuracy is not None else "N/A"
     }
-    
+
     # Insert the prediction record into the database (ensure database connection is set up)
     try:
         predictions_collection.insert_one(prediction_record)
@@ -401,8 +395,12 @@ def predict_heart_disease():
         print(f"Error storing prediction: {e}")  # Log the error to the console
         return jsonify({"message": f"Error storing prediction: {str(e)}"}), 500
 
-    # Return the result and the numeric prediction (1 or 0)
-    return jsonify({'result': result, 'prediction': int(prediction[0])})
+    # Return the result, the prediction, and the accuracy (if available)
+    response_data = {'result': result, 'prediction': int(prediction[0])}
+    if accuracy is not None:
+        response_data['accuracy'] = f"{accuracy * 100:.2f}%"
+
+    return jsonify(response_data)
 
 if __name__ == '__main__':
     app.run(debug=True)
