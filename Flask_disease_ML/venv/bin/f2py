@@ -1,4 +1,4 @@
-#!/Users/blackieedada/Documents/Projects/Preds_Car/venv/bin/python3
+#!/Users/sulavkarki/Documents/projects/Major_Project/Flask_disease_ML/venv/bin/python3.13
 # -*- coding: utf-8 -*-
 import re
 import sys

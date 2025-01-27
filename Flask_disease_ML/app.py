@@ -2,6 +2,13 @@ import matplotlib
 # Use Agg backend to avoid GUI-related issues on macOS
 matplotlib.use('Agg')
 
+import warnings
+from sklearn.exceptions import InconsistentVersionWarning
+
+# Suppress the specific warnings
+warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
@@ -57,12 +64,16 @@ except Exception as e:
 # Load the dataset
 df = pd.read_csv(f'{working_dir}/dataset/heart.csv')  
 X = df.drop('target', axis=1)  # Features (exclude 'target' column)
+
 y = df['target']  # Target (the 'target' column)
 
-# Function to train and generate the evaluation metrics for the model
-def generate_model_report(model_type):
+def generate_all_model_reports():
     categorical_columns = ['cp', 'restecg', 'exang', 'slope', 'ca', 'thal', 'fbs']
     continuous_columns = ['age', 'trestbps', 'chol', 'thalach', 'oldpeak']
+
+    missing_columns = [col for col in categorical_columns if col not in X.columns]
+    if missing_columns:
+        raise ValueError(f"Missing columns in data: {missing_columns}")
 
     # One-hot encode categorical variables
     X_encoded = pd.get_dummies(X, columns=categorical_columns, drop_first=True)
@@ -77,80 +88,87 @@ def generate_model_report(model_type):
     # Train-test split (for evaluation)
     X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42)
 
-    # Select the appropriate model
-    if model_type == 'LR':
-        model = heart_disease_lr_model
-    elif model_type == 'SVM':
-        model = heart_disease_svm_model
-    elif model_type == 'RF':
-        model = heart_disease_rf_model
-    else:
-        return None, "Model type not supported"
+    # Define models (do not change this)
+    models = {
+        'LR': heart_disease_lr_model,
+        'SVM': heart_disease_svm_model,
+        'RF': heart_disease_rf_model
+    }
 
-    print(f"Model type: {type(model)}")
+    report_data = {
+        'roc_images': {},
+        'confusion_matrices': {},
+        'roc_auc': {}
+    }
 
-    # Train the model
-    model.fit(X_train, y_train)
+    # Loop through each model and generate reports
+    for model_name, model in models.items():
+        if model is None:
+            continue
 
-    # Predictions for the test set
-    predictions = model.predict(X_test)
+        # Train the model
+        model.fit(X_train, y_train)
 
-    # Check if the model supports `predict_proba`
-    if hasattr(model, "predict_proba"):
-        pred_probs = model.predict_proba(X_test)[:, 1]  # Probability for positive class
-    else:
-        # If predict_proba is not available, use predictions as an alternative
-        pred_probs = predictions  # Probability for positive class
+        # Predictions for the test set
+        predictions = model.predict(X_test)
 
-    # Generate ROC curve
-    fpr, tpr, _ = roc_curve(y_test, pred_probs)
-    roc_auc = auc(fpr, tpr)
+        # Check if the model supports `predict_proba`
+        if hasattr(model, "predict_proba"):
+            pred_probs = model.predict_proba(X_test)[:, 1]  # Probability for positive class
+        else:
+            # If predict_proba is not available, use predictions as an alternative
+            pred_probs = predictions  # Probability for positive class
 
-    # Create ROC curve plot
-    fig, ax = plt.subplots()
-    ax.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
-    ax.plot([0, 1], [0, 1], color='gray', lw=2, linestyle='--')
-    ax.set_xlim([0.0, 1.0])
-    ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel('False Positive Rate')
-    ax.set_ylabel('True Positive Rate')
-    ax.set_title('Receiver Operating Characteristic (ROC)')
-    ax.legend(loc='lower right')
+        # Generate ROC curve
+        fpr, tpr, _ = roc_curve(y_test, pred_probs)
+        roc_auc = auc(fpr, tpr)
 
-    # Save ROC curve to base64
-    buf = BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    roc_image_base64 = base64.b64encode(buf.read()).decode('utf-8')
-    buf.close()
+        # Create ROC curve plot
+        fig, ax = plt.subplots()
+        ax.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color='gray', lw=2, linestyle='--')
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title('Receiver Operating Characteristic (ROC)')
+        ax.legend(loc='lower right')
 
-    # Generate confusion matrix
-    cm = confusion_matrix(y_test, predictions)
-    fig, ax = plt.subplots()
-    cax = ax.matshow(cm, cmap='Blues')
-    fig.colorbar(cax)
-    ax.set_xlabel('Predicted', color='white')
-    ax.set_ylabel('Actual', color='white')
-    ax.set_title('Confusion Matrix', color='white')
+        # Save ROC curve to base64
+        buf = BytesIO()
+        fig.savefig(buf, format='png') 
+        buf.seek(0)
+        roc_image_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        buf.close()
 
-    # Adding numerical values inside the matrix cells
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            text_color = 'white' if cm[i, j] > cm.max() / 2 else 'black'
-            ax.text(j, i, str(cm[i, j]), ha='center', va='center', color=text_color, fontsize=14)
+        # Generate confusion matrix
+        cm = confusion_matrix(y_test, predictions)
+        fig, ax = plt.subplots()
+        cax = ax.matshow(cm, cmap='Blues')
+        fig.colorbar(cax)
+        ax.set_xlabel('Predicted', color='white')
+        ax.set_ylabel('Actual', color='white')
+        ax.set_title('Confusion Matrix', color='white')
 
-    # Save confusion matrix to base64
-    buf = BytesIO()
-    fig.savefig(buf, format='png', facecolor='#2e2e2e')  # Save with dark background
-    buf.seek(0)
-    cm_image_base64 = base64.b64encode(buf.read()).decode('utf-8')
-    buf.close()
+        # Adding numerical values inside the matrix cells
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                text_color = 'white' if cm[i, j] > cm.max() / 2 else 'black'
+                ax.text(j, i, str(cm[i, j]), ha='center', va='center', color=text_color, fontsize=14)
 
-    return {
-        "roc_image": roc_image_base64,
-        "cm_image": cm_image_base64,
-        "roc_auc": roc_auc
-    }, None
+        # Save confusion matrix to base64
+        buf = BytesIO()
+        fig.savefig(buf, format='png', facecolor='#2e2e2e')  # Save with dark background
+        buf.seek(0)
+        cm_image_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        buf.close()
+
+        # Save results in the report data
+        report_data['roc_images'][model_name] = roc_image_base64
+        report_data['confusion_matrices'][model_name] = cm_image_base64
+        report_data['roc_auc'][model_name] = roc_auc
+
+    return report_data
 
 def preprocess_new_data(data, scaler, saved_columns):
     # List of categorical columns (update these based on your dataset)
@@ -175,8 +193,6 @@ def preprocess_new_data(data, scaler, saved_columns):
     
     # Apply the scaler to the continuous columns
     data_encoded[continuous_columns] = scaler.transform(data_encoded[continuous_columns])
-
-
 
     return data_encoded
 
@@ -207,34 +223,29 @@ def viewResults():
 @app.route('/generate_reports', methods=['POST'])
 def generate_reports():
     try:
-        # Get the model type from the request
-        data = request.get_json()
-        model_type = data.get('model_type', 'LR')  # Default to Logistic Regression
-        print(f"Model type selected: {model_type}")
-
-        # Generate the report based on the selected model
-        report, error = generate_model_report(model_type)
-
-        if error:
-            return jsonify({"error": error}), 400
-
-        # Return the generated report
-        report_data = {
-            "roc_images": {
-                model_type: report["roc_image"],
-            },
-            "confusion_matrices": {
-                model_type: report["cm_image"],
-            },
-            "comparative_auc_chart": None,
-            "roc_auc": report["roc_auc"]
+        # Initialize dictionaries to hold reports for each model
+        reports = {
+            "roc_images": {},
+            "confusion_matrices": {},
+            "roc_auc": {}
         }
 
-        return jsonify(report_data)
+        # Call the function to generate reports for all models
+        report_data = generate_all_model_reports()  # This will now generate for all models (LR, SVM, RF)
+
+        # Populate the reports dictionary for each model
+        for model_name in report_data["roc_images"].keys():
+            reports["roc_images"][model_name] = report_data["roc_images"][model_name]
+            reports["confusion_matrices"][model_name] = report_data["confusion_matrices"][model_name]
+            reports["roc_auc"][model_name] = report_data["roc_auc"][model_name]
+
+        # Optionally, generate a comparative AUC chart here by combining the individual AUCs
+        # You can use the data in `reports["roc_auc"]` to create a comparative chart
+
+        return jsonify(reports)
 
     except Exception as e:
-        print(f"Error occurred: {e}")
-
+        print(f"Error occurred: {str(e)}")
         return jsonify({"error": str(e)}), 500
     
 @app.route('/submit_suggestion', methods=['POST'])
@@ -321,14 +332,62 @@ def login_user():
 
     return jsonify({"message": "Invalid credentials"}), 400
 
+@app.route('/generate_patient_report', methods=['POST'])
+def generate_patient_report():
+    try:
+        # Extract the email from the JSON data
+
+        data = request.get_json()
+        email = data.get("email")
+        print(f"Received data: {data}")  
+        print(f"Received email: {email}")  
+
+        if not email:
+            return jsonify({"message": "Email is missing in the request"}), 400
+
+        # Fetch the most recent prediction record for the given email
+        prediction_record = predictions_collection.find({"user": email})\
+            .sort("prediction_time", -1).limit(1)  # Sort by prediction_time in descending order and limit to 1
+        
+        userDetails = users_collection.find_one({"email":email})
+        username = userDetails.get('username')
+
+        prediction_record = prediction_record[0] if prediction_record else None  # Extract the first result
+
+        if not prediction_record:
+            return jsonify({"message": "No report found for the given patient email"}), 404
+        
+        sexValue = prediction_record.get("input_data", {}).get("sex")
+        sex = "Male" if sexValue == 1 else "Female"
+
+        patient_report = {
+            "patient_details": {
+                "username":username,
+                "age": prediction_record.get("input_data", {}).get("age"),
+                "sex": sex
+            },
+            "prediction": prediction_record.get("prediction", "Unknown"),
+            "model_used": prediction_record.get("model_used", {}),
+            "prediction_time": prediction_record.get("prediction_time").strftime("%Y-%m-%d %H:%M:%S")
+            if prediction_record.get("prediction_time") else "N/A",
+        }
+        print(f"patient_report {patient_report}")
+        return jsonify(patient_report)
+
+    except Exception as e:
+        print(f"Error generating patient report: {e}")
+        return jsonify({"message": f"Error: {str(e)}"}), 500
+    
 @app.route('/predict', methods=['POST'])
 @jwt_required()
 def predict_heart_disease():
-
     current_user = get_jwt_identity()  
     print(f"Request from user: {current_user}")  # For debugging
 
     data = request.get_json()  # Get the input data from the request
+
+    
+      # Get the email sent from the frontend
 
     required_fields = [
         'age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 'thalach', 
@@ -358,7 +417,7 @@ def predict_heart_disease():
         return jsonify({"message": f"Invalid input: {str(e)}"}), 400
 
     # Extract model_type
-    model_type = data.get('model_type', "")
+    model_type = data.get('model_type', "").upper()  # Ensure case-insensitive matching
 
     # Prepare the features list (make sure to extract the correct values)
     features = [
@@ -371,14 +430,10 @@ def predict_heart_disease():
         input_data = pd.DataFrame([features], columns=required_fields[:13])
         processed_data = preprocess_new_data(input_data, scaler, saved_columns)  # Preprocess input data
         print("Processed Data Shape:", processed_data.shape)
-          # Log the processed DataFrame
     except Exception as e:
         return jsonify({"message": f"Error during preprocessing: {str(e)}"}), 500
 
     # Model selection based on the user's input model_type
-    model_type = model_type.upper() if model_type else None
-
-    # Determine which model to use
     if model_type == 'LR':
         model = heart_disease_lr_model
     elif model_type == 'SVM':
@@ -390,21 +445,13 @@ def predict_heart_disease():
 
     # Make the prediction using the selected model
     try:
-        
-        if model_type == 'RF' and hasattr(model, 'predict_proba'):
+        if hasattr(model, 'predict_proba'):
             probabilities = model.predict_proba(processed_data)
-           
-            print("Probabilities for RF", probabilities)
-
-            prediction = 'Heart Disease predicted' if probabilities[0][1] >= 0.4 else 'No Heart Disease predicted'
-        elif model_type == 'LR':
-            probabilities = model.predict_proba(processed_data)
-            print("Probabilities for LR", probabilities)
-            prediction = 'Heart Disease predicted' if probabilities[0][1] >= 0.36 else 'No Heart Disease predicted'
+            print(f"Probabilities for {model_type}: {probabilities}")
+            prediction = 'Heart Disease predicted' if probabilities[0][1] >= 0.45 else 'No Heart Disease predicted'
         else:
-            # For models without `predict_proba`, use `predict`
             prediction_class = model.predict(processed_data)[0]
-            prediction = 'Heart Disease predicted' if prediction_class == 1 else 'No Heart Disease predicted'
+            prediction = 'No Heart Disease predicted' if prediction_class == 0 else 'Heart Disease predicted'
     except Exception as e:
         print(f"Error during prediction: {e}")  # Log the error to the console
         return jsonify({"message": f"Prediction error: {str(e)}"}), 500
@@ -433,6 +480,7 @@ def predict_heart_disease():
 
     # Save prediction in the database (MongoDB)
     prediction_record = {
+        "user": current_user,
         "input_data": data,
         "prediction": prediction,  # The prediction result string
         "model_used": model_type,
