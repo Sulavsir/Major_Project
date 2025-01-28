@@ -57,12 +57,14 @@ try:
     heart_disease_rf_model = joblib.load(open(f'{working_dir}/saved_models/rf_model.joblib', 'rb'))
     saved_columns = joblib.load(open(f'{working_dir}/saved_models/saved_columns.joblib', 'rb'))
     scaler = joblib.load(open(f'{working_dir}/saved_models/scaler.joblib', 'rb'))
+   
+
 except Exception as e:
     print(f"Error loading models or scaler: {e}")
     exit("Model or scaler files are missing. Please check the files.")
 
 # Load the dataset
-df = pd.read_csv(f'{working_dir}/dataset/heart.csv')  
+df = pd.read_csv(f'{working_dir}/dataset/heartnew.csv')  
 X = df.drop('target', axis=1)  # Features (exclude 'target' column)
 
 y = df['target']  # Target (the 'target' column)
@@ -81,6 +83,11 @@ def generate_all_model_reports():
     # Save the column names for consistency
     saved_columns = X_encoded.columns.tolist()
 
+    print("Training columns:", saved_columns)
+    print("Prediction columns:", X_encoded.columns.tolist())
+
+    
+
     # Initialize the scaler
     scaler = StandardScaler()
     X_encoded[continuous_columns] = scaler.fit_transform(X_encoded[continuous_columns])
@@ -94,6 +101,7 @@ def generate_all_model_reports():
         'SVM': heart_disease_svm_model,
         'RF': heart_disease_rf_model
     }
+    
 
     report_data = {
         'roc_images': {},
@@ -171,12 +179,11 @@ def generate_all_model_reports():
     return report_data
 
 def preprocess_new_data(data, scaler, saved_columns):
-    # List of categorical columns (update these based on your dataset)
     categorical_columns = ['cp', 'restecg', 'exang', 'slope', 'ca', 'thal', 'fbs']
-    
+
     # One-hot encode the categorical features
     data_encoded = pd.get_dummies(data, columns=categorical_columns, drop_first=True)
-
+    
     # Add missing columns (those that are in saved_columns but not in the input data)
     missing_cols = set(saved_columns) - set(data_encoded.columns)
     for col in missing_cols:
@@ -184,14 +191,11 @@ def preprocess_new_data(data, scaler, saved_columns):
     print("Missing Columns:", set(saved_columns) - set(data_encoded.columns))
     print("Extra Columns:", set(data_encoded.columns) - set(saved_columns))
 
-
     # Reorder columns to match the saved_columns order
-    data_encoded = data_encoded[saved_columns]
-
-    # List of continuous columns that need to be scaled (ensure this matches your training columns)
-    continuous_columns = ['age', 'trestbps', 'chol', 'thalach', 'oldpeak']
+    data_encoded = data_encoded[saved_columns]  # Ensure the order matches exactly
     
-    # Apply the scaler to the continuous columns
+    # Apply scaling to continuous columns
+    continuous_columns = ['age', 'trestbps', 'chol', 'thalach', 'oldpeak']
     data_encoded[continuous_columns] = scaler.transform(data_encoded[continuous_columns])
 
     return data_encoded
@@ -241,7 +245,7 @@ def generate_reports():
 
         # Optionally, generate a comparative AUC chart here by combining the individual AUCs
         # You can use the data in `reports["roc_auc"]` to create a comparative chart
-
+        os.system('pm2 restart backend')
         return jsonify(reports)
 
     except Exception as e:
@@ -385,9 +389,8 @@ def predict_heart_disease():
     print(f"Request from user: {current_user}")  # For debugging
 
     data = request.get_json()  # Get the input data from the request
-
-    
-      # Get the email sent from the frontend
+    print(f"Received data: {data}")
+  # For debugging
 
     required_fields = [
         'age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 'thalach', 
@@ -407,11 +410,13 @@ def predict_heart_disease():
         thalach = float(data['thalach'])
         oldpeak = float(data['oldpeak'])
         
+
         # Basic validation for numeric fields
         if age < 0 or age > 100:
             return jsonify({"message": "Age must be between 0 and 100"}), 400
         if thalach < 50 or thalach > 220:
             return jsonify({"message": "Thalach must be between 50 and 220"}), 400
+        
 
     except ValueError as e:
         return jsonify({"message": f"Invalid input: {str(e)}"}), 400
@@ -427,8 +432,10 @@ def predict_heart_disease():
 
     # Create the DataFrame for the model input
     try:
+        
         input_data = pd.DataFrame([features], columns=required_fields[:13])
-        processed_data = preprocess_new_data(input_data, scaler, saved_columns)  # Preprocess input data
+        processed_data = preprocess_new_data(input_data, scaler, saved_columns) 
+ # Preprocess input data
         print("Processed Data Shape:", processed_data.shape)
     except Exception as e:
         return jsonify({"message": f"Error during preprocessing: {str(e)}"}), 500
@@ -442,13 +449,18 @@ def predict_heart_disease():
         model = heart_disease_rf_model
     else:
         return jsonify({"message": "Invalid model type selected"}), 400
+    
+    processed_data = processed_data[saved_columns]
 
     # Make the prediction using the selected model
     try:
+        print(f"Making prediction using model: {model_type}")
+
         if hasattr(model, 'predict_proba'):
+
             probabilities = model.predict_proba(processed_data)
             print(f"Probabilities for {model_type}: {probabilities}")
-            prediction = 'Heart Disease predicted' if probabilities[0][1] >= 0.45 else 'No Heart Disease predicted'
+            prediction = 'Heart Disease predicted' if probabilities[0][1] >= 0.488 else 'No Heart Disease predicted'
         else:
             prediction_class = model.predict(processed_data)[0]
             prediction = 'No Heart Disease predicted' if prediction_class == 0 else 'Heart Disease predicted'
@@ -496,7 +508,7 @@ def predict_heart_disease():
         return jsonify({"message": f"Error storing prediction: {str(e)}"}), 500
 
     # Return the prediction and accuracy
-    response_data = {'model_type':model_type,'result': prediction, 'prediction': 1 if 'Heart Disease predicted' in prediction else 0}
+    response_data = {'model_type': model_type, 'result': prediction, 'prediction': 1 if 'Heart Disease predicted' in prediction else 0}
     if accuracy is not None:
         response_data['accuracy'] = f"{accuracy * 100:.2f}%"
 
